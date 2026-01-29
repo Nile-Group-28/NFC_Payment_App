@@ -1,0 +1,8 @@
+
+{
+  "name": "TAPPAY: Contactless Wallet (Flutter)",
+  "description": "A high-fidelity Flutter conversion of the TAPPAY digital wallet featuring NFC payments and Soft POS mode.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
