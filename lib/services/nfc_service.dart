@@ -41,20 +41,31 @@ class NfcService {
       onWaitingForTap();
       NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
         try {
+          final message =
+              NdefMessage([NdefRecord.createText(token.toNfcPayload())]);
+
           final ndef = Ndef.from(tag);
-          if (ndef == null) {
-            onError('Not NDEF compatible.');
-            await NfcManager.instance
-                .stopSession(errorMessage: 'Not compatible');
-            return;
+          if (ndef != null) {
+            if (!ndef.isWritable) {
+              onError('NFC tag is read-only.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Read only');
+              return;
+            }
+            await ndef.write(message);
+          } else {
+            // Tag isn't already NDEF-formatted — try to format it first.
+            // This handles blank Mifare Classic / Mifare Ultralight tags.
+            final ndefFormatable = NdefFormatable.from(tag);
+            if (ndefFormatable == null) {
+              onError('Tag not supported. Use an NFC Forum or Mifare tag.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Not supported');
+              return;
+            }
+            await ndefFormatable.format(message);
           }
-          if (!ndef.isWritable) {
-            onError('NFC tag is read-only.');
-            await NfcManager.instance.stopSession(errorMessage: 'Read only');
-            return;
-          }
-          await ndef.write(
-              NdefMessage([NdefRecord.createText(token.toNfcPayload())]));
+
           await NfcManager.instance
               .stopSession(alertMessage: 'Payment sent! ✓');
           onSuccess();
