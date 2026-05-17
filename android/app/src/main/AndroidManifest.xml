@@ -4,6 +4,8 @@
     <!-- NFC permission for contactless payments -->
     <uses-permission android:name="android.permission.NFC" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
+    <!-- HCE: lets the sender phone emulate an NFC card for phone-to-phone payments -->
+    <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
 
     <!-- Camera permission for QR code scanning -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -42,6 +44,20 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!-- HCE service: holds the payment token and responds when receiver taps -->
+        <service
+            android:name=".TapPayHceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NFC_SERVICE">
+            <intent-filter>
+                <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.nfc.cardemulation.host_apdu_service"
+                android:resource="@xml/apduservice" />
+        </service>
 
         <meta-data
             android:name="flutterEmbedding"

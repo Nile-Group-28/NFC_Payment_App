@@ -5,9 +5,15 @@ import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
 
 class ApiConfig {
-  // Android emulator  → http://10.0.2.2:3000/api
-  // Real device       → http://YOUR_WIFI_IP:3000/api  (run ipconfig to find it)
-  static const String baseUrl = 'http://172.20.10.2:3000/api';
+  // Precedence (highest → lowest):
+  //   1. --dart-define=API_BASE_URL=https://xxxx.ngrok-free.app/api
+  //      Start backend: npm run dev:ngrok  (prints the URL)
+  //      Run app:       flutter run --dart-define=API_BASE_URL=<url>
+  //   2. Real-device local fallback → update the IP below if needed
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://172.20.10.2:3000/api',
+  );
 }
 
 class Session {
