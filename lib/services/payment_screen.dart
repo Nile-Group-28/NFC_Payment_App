@@ -55,6 +55,7 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
   String _statusMessage = 'Hold phones together';
   String _errorMessage = '';
   double _settledAmount = 0;
+  bool _isSend = true; // true = sent, false = received
   final TextEditingController _amtCtrl = TextEditingController();
 
   @override
@@ -67,6 +68,7 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
   void dispose() {
     _amtCtrl.dispose();
     NfcService.stopSession();
+    NfcService.cancelSend();
     super.dispose();
   }
 
@@ -101,11 +103,72 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
           setState(() {
             _settledAmount = amt;
             _mode = 'SUCCESS';
+            _isSend = true;
           });
           widget.onPaymentSuccess?.call('NFC Payment Sent', amt);
           Future.delayed(const Duration(seconds: 2), () {
             if (mounted) Navigator.pop(context);
           });
+        }
+      },
+      onError: (msg) {
+        if (mounted)
+          setState(() {
+            _mode = 'ERROR';
+            _errorMessage = msg;
+          });
+      },
+    );
+  }
+
+  // ── NFC receive ───────────────────────────────────────────────────────────
+  void _startNfcReceive() {
+    setState(() {
+      _mode = 'NFC_RECEIVING';
+      _statusMessage = 'Hold near sender\'s phone';
+      _isSend = false;
+    });
+
+    NfcService.startReceiveSession(
+      onWaitingForTap: () {
+        if (mounted)
+          setState(() => _statusMessage = 'Hold near sender\'s phone');
+      },
+      onTokenReceived: (NfcPaymentToken token) async {
+        if (!mounted) return;
+        setState(() => _settling = true);
+        try {
+          await WalletApi.nfcSettle(
+            senderId: token.senderId,
+            amount: token.amount,
+            tokenId: token.tokenId,
+          );
+          if (mounted) {
+            setState(() {
+              _settling = false;
+              _settledAmount = token.amount;
+              _mode = 'SUCCESS';
+              _isSend = false;
+            });
+            widget.onPaymentSuccess?.call('NFC Payment Received', token.amount);
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted) Navigator.pop(context);
+            });
+          }
+        } on ApiException catch (e) {
+          if (mounted)
+            setState(() {
+              _settling = false;
+              _mode = 'ERROR';
+              _errorMessage = e.message;
+            });
+        } catch (e) {
+          if (mounted)
+            setState(() {
+              _settling = false;
+              _mode = 'ERROR';
+              _errorMessage = 'Settlement failed: $e';
+            });
         }
       },
       onError: (msg) {
@@ -192,6 +255,8 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
     switch (_mode) {
       case 'NFC_WAITING':
         return _nfcWaiting();
+      case 'NFC_RECEIVING':
+        return _nfcReceiving();
       case 'QR_DISPLAY':
         return _qrDisplay();
       case 'SUCCESS':
@@ -269,6 +334,13 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
                   enabled: _amount != null,
                   onTap: _showQr),
               const SizedBox(height: 16),
+              if (_nfcAvailable) ...[
+                TextButton.icon(
+                    onPressed: _startNfcReceive,
+                    icon: const Icon(Icons.contactless, size: 18),
+                    label: const Text('NFC Tap to Receive Payment',
+                        style: TextStyle(fontWeight: FontWeight.bold))),
+              ],
               TextButton.icon(
                   onPressed: _openScanner,
                   icon: const Icon(Icons.qr_code_scanner, size: 18),
@@ -276,6 +348,58 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
                       style: TextStyle(fontWeight: FontWeight.bold))),
               const SizedBox(height: 16),
             ])),
+      );
+
+  Widget _nfcReceiving() => Scaffold(
+        backgroundColor: Colors.white,
+        body: SafeArea(
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Spacer(),
+          Stack(alignment: Alignment.center, children: [
+            SizedBox(
+                width: 200,
+                height: 200,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.green.shade200)),
+            SizedBox(
+                width: 155,
+                height: 155,
+                child: CircularProgressIndicator(
+                    strokeWidth: 1.5, color: Colors.green.shade100, value: 0.7)),
+            Container(
+                width: 100,
+                height: 100,
+                decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.08),
+                    shape: BoxShape.circle),
+                child: const Icon(Icons.contactless,
+                    size: 52, color: Colors.green)),
+          ]),
+          const SizedBox(height: 48),
+          const Text('Ready to Receive',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          Text(_statusMessage,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey, fontSize: 16)),
+          const SizedBox(height: 32),
+          const Text('Waiting for sender…',
+              style: TextStyle(fontSize: 16, color: Colors.grey)),
+          const Spacer(),
+          Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 32),
+              child: TextButton(
+                  onPressed: () {
+                    NfcService.stopSession();
+                    setState(() => _mode = 'IDLE');
+                  },
+                  child: const Text('Cancel',
+                      style: TextStyle(
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16)))),
+        ])),
       );
 
   Widget _nfcWaiting() => Scaffold(
@@ -366,8 +490,8 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
                   child:
                       const Icon(Icons.check, color: Colors.white, size: 65))),
           const SizedBox(height: 40),
-          const Text('Payment Successful',
-              style: TextStyle(
+          Text(_isSend ? 'Payment Sent' : 'Payment Received',
+              style: const TextStyle(
                   color: Colors.white,
                   fontSize: 26,
                   fontWeight: FontWeight.w900)),
