@@ -73,9 +73,13 @@ class NfcService {
           _log('HCE event received: $event');
           if (event == 'tap_complete') {
             sub.cancel();
-            _log('Tap complete — clearing HCE token');
-            _methodCh.invokeMethod('clearToken');
-            onSuccess();
+            // Give receiver 2 seconds to complete the HTTP settle before
+            // clearing token and surfacing success to sender.
+            _log('Tap complete — waiting 2s for receiver to settle');
+            Future.delayed(const Duration(seconds: 2), () {
+              _methodCh.invokeMethod('clearToken');
+              onSuccess();
+            });
           }
         },
         onError: (e) {
