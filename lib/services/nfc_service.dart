@@ -1,12 +1,25 @@
 // lib/services/nfc_service.dart
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/services.dart';
 import 'package:nfc_manager/nfc_manager.dart';
 import 'payment_token.dart';
 
 export 'payment_token.dart'; // re-export so old code still works
 
+// AID: F0 (proprietary prefix) + "TAPPAY" in ASCII = F0 54 41 50 50 41 59
+const _aid = [0xF0, 0x54, 0x41, 0x50, 0x50, 0x41, 0x59];
+
+// SELECT AID APDU: 00 A4 04 00 <Lc> <AID> 00
+final _selectAidApdu = Uint8List.fromList(
+    [0x00, 0xA4, 0x04, 0x00, _aid.length, ..._aid, 0x00]);
+
 class NfcService {
   static const int tokenTtlSeconds = 30;
+
+  static const _methodCh = MethodChannel('com.example.tappay/hce');
+  static const _eventCh  = EventChannel('com.example.tappay/hce_events');
 
   static Future<bool> isAvailable() async {
     try {
@@ -16,6 +29,11 @@ class NfcService {
     }
   }
 
+  // ── SEND (HCE — phone-to-phone) ───────────────────────────────────────────
+  //
+  // Sets the payment token in the Android HCE service so this phone acts as
+  // an NFC card. When the receiver taps, Android delivers the token via APDU.
+  // onSuccess fires when the phones separate after a successful tap.
   static Future<void> startSendSession({
     required String senderId,
     required double amount,
@@ -38,47 +56,32 @@ class NfcService {
     );
 
     try {
+      await _methodCh.invokeMethod('setToken', token.toNfcPayload());
       onWaitingForTap();
-      NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
-        try {
-          final message =
-              NdefMessage([NdefRecord.createText(token.toNfcPayload())]);
 
-          final ndef = Ndef.from(tag);
-          if (ndef != null) {
-            if (!ndef.isWritable) {
-              onError('NFC tag is read-only.');
-              await NfcManager.instance
-                  .stopSession(errorMessage: 'Read only');
-              return;
-            }
-            await ndef.write(message);
-          } else {
-            // Tag isn't already NDEF-formatted — try to format it first.
-            // This handles blank Mifare Classic / Mifare Ultralight tags.
-            final ndefFormatable = NdefFormatable.from(tag);
-            if (ndefFormatable == null) {
-              onError('Tag not supported. Use an NFC Forum or Mifare tag.');
-              await NfcManager.instance
-                  .stopSession(errorMessage: 'Not supported');
-              return;
-            }
-            await ndefFormatable.format(message);
+      // Listen for the HCE tap-complete broadcast (fires when phones separate)
+      late StreamSubscription<dynamic> sub;
+      sub = _eventCh.receiveBroadcastStream().listen(
+        (event) {
+          if (event == 'tap_complete') {
+            sub.cancel();
+            _methodCh.invokeMethod('clearToken');
+            onSuccess();
           }
-
-          await NfcManager.instance
-              .stopSession(alertMessage: 'Payment sent! ✓');
-          onSuccess();
-        } catch (e) {
-          await NfcManager.instance.stopSession(errorMessage: 'Send failed');
-          onError('NFC write failed: $e');
-        }
-      });
+        },
+        onError: (e) {
+          sub.cancel();
+          _methodCh.invokeMethod('clearToken');
+          onError('NFC send failed: $e');
+        },
+      );
     } catch (e) {
-      onError('Could not start NFC: $e');
+      _methodCh.invokeMethod('clearToken');
+      onError('Could not set up NFC send: $e');
     }
   }
 
+  // ── RECEIVE (IsoDep for phone-to-phone, NDEF fallback for physical tags) ──
   static Future<void> startReceiveSession({
     required void Function() onWaitingForTap,
     required void Function(NfcPaymentToken token) onTokenReceived,
@@ -93,44 +96,86 @@ class NfcService {
       onWaitingForTap();
       NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
         try {
-          final ndef = Ndef.from(tag);
-          if (ndef == null) {
-            onError('Could not read NFC.');
-            await NfcManager.instance.stopSession(errorMessage: 'Read failed');
-            return;
-          }
-          final message = ndef.cachedMessage;
-          if (message == null || message.records.isEmpty) {
-            onError('NFC tag empty.');
-            await NfcManager.instance.stopSession(errorMessage: 'No data');
-            return;
-          }
+          // ── Path 1: phone-to-phone via HCE (IsoDep) ──────────────────────
+          final isoDep = IsoDep.from(tag);
+          if (isoDep != null) {
+            final response =
+                await isoDep.transceive(data: _selectAidApdu);
 
-          final record = message.records.first;
-          final langLen = record.payload[0] & 0x3F;
-          final rawText = utf8.decode(record.payload.sublist(1 + langLen));
+            // Response must be at least 2 bytes (SW1 SW2)
+            if (response.length < 3) {
+              onError('No response from sender. Make sure TapPay is open on their phone.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'No response');
+              return;
+            }
 
-          NfcPaymentToken token;
-          try {
-            token = NfcPaymentToken.fromNfcPayload(rawText);
-          } on FormatException catch (e) {
-            onError(e.message);
+            final sw1 = response[response.length - 2];
+            final sw2 = response[response.length - 1];
+
+            if (sw1 == 0x6A && sw2 == 0x82) {
+              onError('Sender not ready. Ask them to start a payment first.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Sender not ready');
+              return;
+            }
+
+            if (sw1 != 0x90 || sw2 != 0x00) {
+              onError('Unexpected NFC response. Try again.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Bad response');
+              return;
+            }
+
+            final rawText =
+                utf8.decode(response.sublist(0, response.length - 2));
+            final token = _parseToken(rawText, onError);
+            if (token == null) {
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Invalid token');
+              return;
+            }
+
             await NfcManager.instance
-                .stopSession(errorMessage: 'Invalid token');
+                .stopSession(alertMessage: 'Payment received! ✓');
+            onTokenReceived(token);
             return;
           }
 
-          if (token.isExpired) {
-            onError('Token expired. Tap again.');
-            await NfcManager.instance.stopSession(errorMessage: 'Expired');
+          // ── Path 2: physical NDEF tag (fallback) ─────────────────────────
+          final ndef = Ndef.from(tag);
+          if (ndef != null) {
+            final message = ndef.cachedMessage;
+            if (message == null || message.records.isEmpty) {
+              onError('NFC tag is empty.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'No data');
+              return;
+            }
+            final record  = message.records.first;
+            final langLen = record.payload[0] & 0x3F;
+            final rawText =
+                utf8.decode(record.payload.sublist(1 + langLen));
+
+            final token = _parseToken(rawText, onError);
+            if (token == null) {
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Invalid token');
+              return;
+            }
+
+            await NfcManager.instance
+                .stopSession(alertMessage: 'Payment received! ✓');
+            onTokenReceived(token);
             return;
           }
 
+          onError('Could not read NFC device.');
           await NfcManager.instance
-              .stopSession(alertMessage: 'Payment received! ✓');
-          onTokenReceived(token);
+              .stopSession(errorMessage: 'Read failed');
         } catch (e) {
-          await NfcManager.instance.stopSession(errorMessage: 'Read error');
+          await NfcManager.instance
+              .stopSession(errorMessage: 'Read error');
           onError('Read failed: $e');
         }
       });
@@ -139,9 +184,31 @@ class NfcService {
     }
   }
 
+  static NfcPaymentToken? _parseToken(
+      String raw, void Function(String) onError) {
+    try {
+      final token = NfcPaymentToken.fromNfcPayload(raw);
+      if (token.isExpired) {
+        onError('Token expired. Ask sender to retry.');
+        return null;
+      }
+      return token;
+    } on FormatException catch (e) {
+      onError(e.message);
+      return null;
+    }
+  }
+
   static void stopSession() {
     try {
       NfcManager.instance.stopSession();
+    } catch (_) {}
+  }
+
+  // Call this if the user cancels the send screen before a tap occurs
+  static Future<void> cancelSend() async {
+    try {
+      await _methodCh.invokeMethod('clearToken');
     } catch (_) {}
   }
 }

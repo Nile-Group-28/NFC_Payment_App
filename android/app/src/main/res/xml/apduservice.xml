@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Registers TapPay's proprietary AID with Android's NFC card-emulation router.
+  AID F0544150504159 = F0 (proprietary prefix) + "TAPPAY" in ASCII.
+-->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/app_name"
+    android:requireDeviceScreenOn="true">
+    <aid-group
+        android:description="@string/app_name"
+        android:category="other">
+        <aid-filter android:name="F0544150504159" />
+    </aid-group>
+</host-apdu-service>
