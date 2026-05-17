@@ -1,10 +1,10 @@
 // lib/services/nfc_service.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:nfc_manager/nfc_manager.dart';
+import 'package:nfc_manager/platform_tags.dart';
 import 'payment_token.dart';
 
 export 'payment_token.dart'; // re-export so old code still works
@@ -13,8 +13,8 @@ export 'payment_token.dart'; // re-export so old code still works
 const _aid = [0xF0, 0x54, 0x41, 0x50, 0x50, 0x41, 0x59];
 
 // SELECT AID APDU: 00 A4 04 00 <Lc> <AID> 00
-final _selectAidApdu = Uint8List.fromList(
-    [0x00, 0xA4, 0x04, 0x00, _aid.length, ..._aid, 0x00]);
+final _selectAidApdu =
+    Uint8List.fromList([0x00, 0xA4, 0x04, 0x00, _aid.length, ..._aid, 0x00]);
 
 void _log(String msg) => debugPrint('[NFC] $msg');
 
@@ -22,7 +22,7 @@ class NfcService {
   static const int tokenTtlSeconds = 30;
 
   static const _methodCh = MethodChannel('com.example.tappay/hce');
-  static const _eventCh  = EventChannel('com.example.tappay/hce_events');
+  static const _eventCh = EventChannel('com.example.tappay/hce_events');
 
   static Future<bool> isAvailable() async {
     try {
@@ -172,7 +172,7 @@ class NfcService {
               await NfcManager.instance.stopSession(errorMessage: 'No data');
               return;
             }
-            final record  = message.records.first;
+            final record = message.records.first;
             final langLen = record.payload[0] & 0x3F;
             final rawText = utf8.decode(record.payload.sublist(1 + langLen));
             _log('NDEF payload: $rawText');
