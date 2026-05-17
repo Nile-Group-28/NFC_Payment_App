@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:math' as math;
 import 'services/api_service.dart';
 import 'services/payment_screen.dart';
@@ -277,6 +278,7 @@ class AppState extends ChangeNotifier {
           await KycApi.submitTier2(bvn: bvn, nin: nin, documentType: docType);
       kycTier = d['kycTier'] ?? kycTier;
       kycStatus = d['kycStatus'] ?? kycStatus;
+      _err = d['message']; // surface success message
       notifyListeners();
       return true;
     } on ApiException catch (e) {
@@ -292,7 +294,9 @@ class AppState extends ChangeNotifier {
     clearError();
     try {
       final d = await KycApi.submitTier3(documentType: docType);
+      kycTier = d['kycTier'] ?? kycTier;
       kycStatus = d['kycStatus'] ?? kycStatus;
+      _err = d['message']; // surface success message
       notifyListeners();
       return true;
     } on ApiException catch (e) {
@@ -359,10 +363,23 @@ class _AuthWrapperState extends State<AuthWrapper> {
       appState.isAuthenticated ? const MainLayout() : const AuthScreen();
 }
 
+// Abbreviated (for daily limit display only)
 String _fmt(double v) {
   if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
   if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}K';
   return v.toStringAsFixed(0);
+}
+
+// Full amount with thousand separators
+String _fmtFull(double v) {
+  final parts = v.toStringAsFixed(2).split('.');
+  final whole = parts[0];
+  final buffer = StringBuffer();
+  for (int i = 0; i < whole.length; i++) {
+    if (i > 0 && (whole.length - i) % 3 == 0) buffer.write(',');
+    buffer.write(whole[i]);
+  }
+  return '${buffer.toString()}.${parts[1]}';
 }
 
 String _timeAgo(DateTime dt) {
@@ -1081,7 +1098,10 @@ class _PayFabState extends State<_PayFab> with SingleTickerProviderStateMixin {
         onTapDown: (_) => _c.forward(),
         onTapUp: (_) {
           _c.reverse();
-          Navigator.push(context, _slide(const TapPayPaymentScreen()));
+          Navigator.push(context, _slide(const TapPayPaymentScreen())).then((_) {
+            appState.loadWallet();
+            appState.loadTransactions();
+          });
         },
         onTapCancel: () => _c.reverse(),
         child: ScaleTransition(
@@ -1113,6 +1133,9 @@ class ConsumerDashboard extends StatefulWidget {
 
 class _ConsumerDashboardState extends State<ConsumerDashboard> {
   bool _balVis = true;
+  final _scrollCtrl = ScrollController();
+  int _prevTxCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -1124,10 +1147,27 @@ class _ConsumerDashboardState extends State<ConsumerDashboard> {
   @override
   void dispose() {
     appState.removeListener(_u);
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
-  void _u() => setState(() {});
+  void _u() {
+    if (mounted) {
+      final newCount = appState.transactions.length;
+      if (newCount > _prevTxCount && _prevTxCount > 0) {
+        // New transaction arrived — scroll to top
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollCtrl.hasClients) {
+            _scrollCtrl.animateTo(0,
+                duration: const Duration(milliseconds: 400),
+                curve: Curves.easeOut);
+          }
+        });
+      }
+      _prevTxCount = newCount;
+      setState(() {});
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1146,7 +1186,7 @@ class _ConsumerDashboardState extends State<ConsumerDashboard> {
             await appState.loadWallet();
             await appState.loadTransactions();
           },
-          child: CustomScrollView(slivers: [
+          child: CustomScrollView(controller: _scrollCtrl, slivers: [
             SliverToBoxAdapter(
                 child: Column(children: [
               Padding(
@@ -1265,11 +1305,11 @@ class _ConsumerDashboardState extends State<ConsumerDashboard> {
                                 const SizedBox(height: 10),
                                 Text(
                                     _balVis
-                                        ? '₦${_fmt(appState.balance)}'
+                                        ? '₦${_fmtFull(appState.balance)}'
                                         : '₦ ••••••',
                                     style: const TextStyle(
                                         color: Colors.white,
-                                        fontSize: 38,
+                                        fontSize: 34,
                                         fontWeight: FontWeight.w900,
                                         letterSpacing: -1)),
                                 const SizedBox(height: 4),
@@ -1544,7 +1584,7 @@ class _TxTile extends StatelessWidget {
                           fontWeight: FontWeight.w500)),
                 ])),
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text('${tx.isCredit ? '+' : '−'}₦${_fmt(tx.amount)}',
+              Text('${tx.isCredit ? '+' : '−'}₦${_fmtFull(tx.amount)}',
                   style: TextStyle(
                       fontWeight: FontWeight.w800,
                       fontSize: 15,
@@ -2761,9 +2801,14 @@ class _KycScreenState extends State<KycScreen> {
         bvn: _bvn1.text.trim().isEmpty ? null : _bvn1.text.trim(),
         nin: _nin1.text.trim().isEmpty ? null : _nin1.text.trim());
     if (!mounted) return;
-    ok
-        ? _snack(context, 'Tier 1 verification submitted successfully')
-        : _snack(context, appState.errorMessage ?? 'Failed', error: true);
+    if (ok) {
+      // Pre-fill tier 2 fields with the same BVN/NIN
+      if (_bvn1.text.trim().isNotEmpty) _bvn2.text = _bvn1.text.trim();
+      if (_nin1.text.trim().isNotEmpty) _nin2.text = _nin1.text.trim();
+      _snack(context, 'Tier 1 verified! You can now transact up to ₦30,000/day.');
+    } else {
+      _snack(context, appState.errorMessage ?? 'Failed', error: true);
+    }
   }
 
   Future<void> _t2() async {
@@ -2775,8 +2820,7 @@ class _KycScreenState extends State<KycScreen> {
         bvn: _bvn2.text.trim(), nin: _nin2.text.trim(), docType: _docType2);
     if (!mounted) return;
     ok
-        ? _snack(context,
-            'Tier 2 documents submitted — review takes 1-2 business days')
+        ? _snack(context, appState.errorMessage ?? 'Tier 2 verified! Daily limit raised to ₦200,000.')
         : _snack(context, appState.errorMessage ?? 'Failed', error: true);
   }
 
@@ -2784,8 +2828,7 @@ class _KycScreenState extends State<KycScreen> {
     final ok = await appState.submitKyc3(docType: _docType3);
     if (!mounted) return;
     ok
-        ? _snack(context,
-            'Tier 3 application submitted — review takes 2-3 business days')
+        ? _snack(context, appState.errorMessage ?? 'Tier 3 verified! Maximum limits unlocked.')
         : _snack(context, appState.errorMessage ?? 'Failed', error: true);
   }
 
@@ -3299,32 +3342,35 @@ class _TopUpScreenState extends State<TopUpScreen> {
             Container(
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
-                    color: const Color(0xFFFFFBEB),
+                    color: const Color(0xFFF0FDF4),
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: const Color(0xFFFDE68A))),
+                    border: Border.all(color: const Color(0xFFBBF7D0))),
                 child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.info_outline_rounded,
-                          color: Color(0xFFD97706), size: 20),
+                      const Icon(Icons.credit_card_rounded,
+                          color: Color(0xFF16A34A), size: 20),
                       const SizedBox(width: 10),
                       Expanded(
                           child: Text(
-                              'Open the payment link in your browser to pay with your debit card, then return here and tap "I\'ve Paid" to confirm.',
+                              'Tap "Pay with Paystack" to complete payment in-app. After paying, tap "I\'ve Paid" to confirm.',
                               style: TextStyle(
                                   fontSize: 13,
-                                  color: Colors.orange.shade800,
+                                  color: Colors.green.shade800,
                                   height: 1.5))),
                     ])),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             _infoRow('Reference', _ref, copy: true),
-            const SizedBox(height: 12),
-            _infoRow('Payment Link', _url, copy: true, isLink: true),
             const SizedBox(height: 8),
             Text(
                 'Test card: 4084 0840 8408 4081  ·  Any future expiry  ·  CVV: 408',
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
             const Spacer(),
+            PrimaryButton(
+                label: 'Pay with Paystack',
+                icon: Icons.open_in_new_rounded,
+                onPressed: () => Navigator.push(context, _slide(_PaystackWebView(url: _url, onComplete: _verify)))),
+            const SizedBox(height: 12),
             PrimaryButton(
                 label: 'I\'ve Paid — Confirm',
                 icon: Icons.check_circle_outline_rounded,
@@ -3451,6 +3497,98 @@ class _TopUpScreenState extends State<TopUpScreen> {
                   ]))));
 }
 
+// ─── Paystack Checkout Screen ─────────────────────────────────────────────────
+class _PaystackWebView extends StatefulWidget {
+  final String url;
+  final VoidCallback onComplete;
+  const _PaystackWebView({required this.url, required this.onComplete});
+  @override
+  State<_PaystackWebView> createState() => _PaystackWebViewState();
+}
+
+class _PaystackWebViewState extends State<_PaystackWebView> {
+  bool _opened = false;
+
+  Future<void> _open() async {
+    final uri = Uri.parse(widget.url);
+    try {
+      // ignore: deprecated_member_use
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (mounted) setState(() => _opened = true);
+    } catch (_) {
+      if (mounted) _snack(context, 'Could not open payment link', error: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(
+        title: const Text('Paystack Checkout'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 100,
+              height: 100,
+              decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDF4),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFBBF7D0))),
+              child: const Icon(Icons.payment_rounded,
+                  size: 52, color: Color(0xFF16A34A)),
+            ),
+            const SizedBox(height: 24),
+            const Text('Paystack Secure Checkout',
+                style:
+                    TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: kDark)),
+            const SizedBox(height: 8),
+            Text(
+                _opened
+                    ? 'Browser opened. Complete payment, then return here and confirm.'
+                    : 'Tap below to open secure Paystack checkout in your browser.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 14, height: 1.5)),
+            const SizedBox(height: 8),
+            Text('Test card: 4084 0840 8408 4081  ·  CVV: 408  ·  Any future expiry',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+            const SizedBox(height: 40),
+            PrimaryButton(
+                label: _opened ? 'Re-open Paystack' : 'Open Paystack Checkout',
+                icon: Icons.open_in_new_rounded,
+                onPressed: _open),
+            const SizedBox(height: 16),
+            if (_opened)
+              PrimaryButton(
+                  label: 'I\'ve Paid — Confirm',
+                  icon: Icons.check_circle_outline_rounded,
+                  onPressed: () {
+                    Navigator.pop(context);
+                    widget.onComplete();
+                  }),
+            const SizedBox(height: 12),
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancel',
+                    style: TextStyle(
+                        color: Colors.grey.shade500,
+                        fontWeight: FontWeight.w600))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ─── Transfer Screen ──────────────────────────────────────────────────────────
 class TransferScreen extends StatefulWidget {
   const TransferScreen({super.key});
@@ -3546,31 +3684,40 @@ class AddBankScreen extends StatefulWidget {
 class _AddBankScreenState extends State<AddBankScreen> {
   final _bName = TextEditingController(),
       _acct = TextEditingController(),
-      _code = TextEditingController();
+      _acctName = TextEditingController();
+  bool _loading = false;
+
   @override
   void dispose() {
     _bName.dispose();
     _acct.dispose();
-    _code.dispose();
+    _acctName.dispose();
     super.dispose();
   }
 
   Future<void> _link() async {
-    if (_bName.text.isEmpty || _acct.text.isEmpty || _code.text.isEmpty) {
-      _snack(context, 'Please fill in all fields', error: true);
+    if (_bName.text.isEmpty || _acct.text.isEmpty) {
+      _snack(context, 'Bank name and account number are required', error: true);
       return;
     }
+    if (_acct.text.trim().length != 10 || int.tryParse(_acct.text.trim()) == null) {
+      _snack(context, 'Account number must be exactly 10 digits', error: true);
+      return;
+    }
+    setState(() => _loading = true);
     try {
       await WalletApi.linkBankAccount(
           bankName: _bName.text.trim(),
           accountNumber: _acct.text.trim(),
-          bankCode: _code.text.trim());
+          accountName: _acctName.text.trim().isEmpty ? null : _acctName.text.trim());
       if (!mounted) return;
       await appState.loadWallet();
       _snack(context, 'Bank account linked successfully');
       Navigator.pop(context);
     } on ApiException catch (e) {
-      _snack(context, e.message, error: true);
+      if (mounted) _snack(context, e.message, error: true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -3618,28 +3765,24 @@ class _AddBankScreenState extends State<AddBankScreen> {
                       const SizedBox(width: 10),
                       Expanded(
                           child: Text(
-                              'Linking a bank account lets you withdraw your TapPay balance directly to your Nigerian bank. Account details are verified by Paystack against NIBSS.',
+                              'Link any Nigerian bank account to withdraw your TapPay balance directly. Enter your bank name and 10-digit NUBAN account number.',
                               style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.blue.shade700,
                                   height: 1.5))),
                     ])),
             const SizedBox(height: 24),
-            _f('Bank Name', Icons.account_balance_rounded, _bName),
+            _f('Bank Name (e.g. GTBank, Access)', Icons.account_balance_rounded, _bName),
             const SizedBox(height: 14),
-            _f('Account Number', Icons.numbers_rounded, _acct,
+            _f('Account Number (10 digits)', Icons.numbers_rounded, _acct,
                 keyboard: TextInputType.number),
             const SizedBox(height: 14),
-            _f('Bank Code', Icons.tag_rounded, _code,
-                keyboard: TextInputType.number),
-            const SizedBox(height: 6),
-            Text(
-                'GTBank=058  ·  Access=044  ·  Zenith=057  ·  UBA=033  ·  First Bank=011',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+            _f('Account Name (optional)', Icons.person_outline_rounded, _acctName),
             const Spacer(),
             PrimaryButton(
-                label: 'Verify and Link Account',
+                label: 'Link Account',
                 icon: Icons.link_rounded,
+                loading: _loading,
                 onPressed: _link),
           ])));
 }
