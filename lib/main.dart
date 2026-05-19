@@ -1,1 +1,1 @@
-%%MAIN_DART%%
+%%READ_FROM_FILE%%
