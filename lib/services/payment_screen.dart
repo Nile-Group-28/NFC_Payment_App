@@ -44,7 +44,12 @@ class _Btn extends StatelessWidget {
 // ─── Payment Screen ───────────────────────────────────────────────────────────
 class TapPayPaymentScreen extends StatefulWidget {
   final void Function(String, double)? onPaymentSuccess;
-  const TapPayPaymentScreen({super.key, this.onPaymentSuccess});
+  // 'NFC_RECEIVE' → auto-start receive, 'QR_SCAN' → open scanner immediately
+  final String? initialMode;
+  // Called when user taps "Send to Contact" — caller pushes TransferScreen
+  final VoidCallback? onTransferTap;
+  const TapPayPaymentScreen(
+      {super.key, this.onPaymentSuccess, this.initialMode, this.onTransferTap});
   @override
   State<TapPayPaymentScreen> createState() => _PaymentScreenState();
 }
@@ -58,15 +63,31 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
   double _settledAmount = 0;
   bool _isSend = true;
   Timer? _qrPollTimer;
+  Timer? _verifyTimer;
   int _prevTxCount = 0;
+  int _verifyAttempts = 0;
   double? _qrAmount;
+  double? _pendingSendAmount;
   final TextEditingController _amtCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _checkNfc().then((_) {
-      if (_nfcAvailable && mounted) _autoReceive();
+      if (!mounted) return;
+      if (widget.initialMode == 'NFC_RECEIVE') {
+        if (_nfcAvailable) {
+          _startNfcReceive();
+        } else {
+          _autoReceive();
+        }
+      } else if (widget.initialMode == 'QR_SCAN') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _openScanner();
+        });
+      } else {
+        if (_nfcAvailable) _autoReceive();
+      }
     });
   }
 
@@ -74,6 +95,7 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
   void dispose() {
     _amtCtrl.dispose();
     _qrPollTimer?.cancel();
+    _verifyTimer?.cancel();
     NfcService.stopSession();
     NfcService.cancelSend();
     super.dispose();
@@ -149,6 +171,7 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
 
     // Cancel background auto-receive before arming HCE
     NfcService.stopSession();
+    _pendingSendAmount = amt;
 
     NfcService.startSendSession(
       senderId: uid,
@@ -162,16 +185,11 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
           });
       },
       onSuccess: () {
+        // Do NOT immediately show success — verify via backend first
         if (mounted) {
-          setState(() {
-            _settledAmount = amt;
-            _mode = 'SUCCESS';
-            _isSend = true;
-          });
-          widget.onPaymentSuccess?.call('NFC Payment Sent', amt);
-          Future.delayed(const Duration(seconds: 2), () {
-            if (mounted) Navigator.pop(context);
-          });
+          setState(() => _mode = 'NFC_VERIFYING');
+          _verifyAttempts = 0;
+          _verifyNfcSend(amt);
         }
       },
       onError: (msg) {
@@ -182,6 +200,51 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
           });
       },
     );
+  }
+
+  // Poll backend to confirm sender's debit was actually created
+  void _verifyNfcSend(double amt) {
+    _verifyTimer?.cancel();
+    _verifyTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (!mounted || _mode != 'NFC_VERIFYING') {
+        _verifyTimer?.cancel();
+        return;
+      }
+      _verifyAttempts++;
+      if (_verifyAttempts > 5) {
+        // 5 attempts × 2s = 10s max
+        _verifyTimer?.cancel();
+        if (mounted)
+          setState(() {
+            _mode = 'ERROR';
+            _errorMessage = 'Payment could not be confirmed. Check your transaction history.';
+          });
+        return;
+      }
+      try {
+        final data = await WalletApi.getTransactions(limit: 10);
+        final txs = (data['transactions'] as List? ?? []);
+        for (final tx in txs) {
+          if (tx['isCredit'] == false &&
+              (tx['amount'] as num).toDouble() == amt &&
+              (tx['status'] as String? ?? '').toUpperCase() == 'SUCCESS') {
+            _verifyTimer?.cancel();
+            if (mounted) {
+              setState(() {
+                _settledAmount = amt;
+                _mode = 'SUCCESS';
+                _isSend = true;
+              });
+              widget.onPaymentSuccess?.call('NFC Payment Sent', amt);
+              Future.delayed(const Duration(seconds: 2), () {
+                if (mounted) Navigator.pop(context);
+              });
+            }
+            return;
+          }
+        }
+      } catch (_) {}
+    });
   }
 
   // ── NFC receive (explicit button) ─────────────────────────────────────────
@@ -327,6 +390,8 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
         return _nfcWaiting();
       case 'NFC_RECEIVING':
         return _nfcReceiving();
+      case 'NFC_VERIFYING':
+        return _nfcVerifying();
       case 'QR_DISPLAY':
         return _qrDisplay();
       case 'SUCCESS':
@@ -424,6 +489,17 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
                   icon: const Icon(Icons.qr_code_scanner, size: 18),
                   label: const Text('Scan QR to Receive Payment',
                       style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(height: 12),
+              if (widget.onTransferTap != null)
+                _MBtn(
+                    icon: Icons.send_rounded,
+                    label: 'Send to Contact',
+                    sub: 'Transfer via phone number or email',
+                    bg: Colors.white,
+                    fg: Colors.indigo.shade700,
+                    border: Colors.indigo.shade100,
+                    enabled: true,
+                    onTap: widget.onTransferTap!),
               const SizedBox(height: 8),
             ])),
       );
@@ -431,10 +507,12 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
   Widget _nfcWaiting() => Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
+            child: SizedBox(
+                width: double.infinity,
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
           const Spacer(),
           Center(
             child: Stack(alignment: Alignment.center, children: [
@@ -487,16 +565,18 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
                           color: Colors.grey,
                           fontWeight: FontWeight.bold,
                           fontSize: 16)))),
-        ])),
+        ]))),
       );
 
   Widget _nfcReceiving() => Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
+            child: SizedBox(
+                width: double.infinity,
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
           const Spacer(),
           Center(
             child: Stack(alignment: Alignment.center, children: [
@@ -548,7 +628,31 @@ class _PaymentScreenState extends State<TapPayPaymentScreen> {
                           color: Colors.grey,
                           fontWeight: FontWeight.bold,
                           fontSize: 16)))),
-        ])),
+        ]))),
+      );
+
+  Widget _nfcVerifying() => Scaffold(
+        backgroundColor: Colors.white,
+        body: SafeArea(
+            child: SizedBox(
+                width: double.infinity,
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                  const Spacer(),
+                  const CircularProgressIndicator(strokeWidth: 3),
+                  const SizedBox(height: 40),
+                  const Text('Confirming Payment',
+                      textAlign: TextAlign.center,
+                      style:
+                          TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 8),
+                  const Text('Verifying with server…',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey, fontSize: 15)),
+                  const Spacer(),
+                ]))),
       );
 
   Widget _qrDisplay() => Scaffold(

@@ -673,30 +673,23 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
-class _AuthScreenState extends State<AuthScreen> with TickerProviderStateMixin {
+class _AuthScreenState extends State<AuthScreen> {
   String _step = 'WELCOME';
   bool _usePassword = false;
   final _idCtrl = TextEditingController(),
       _nameCtrl = TextEditingController(),
       _phoneCtrl = TextEditingController(),
       _pwCtrl = TextEditingController();
-  late AnimationController _fadeCtrl;
-  late Animation<double> _fade;
 
   @override
   void initState() {
     super.initState();
     appState.addListener(_u);
-    _fadeCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 250));
-    _fade = CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeOut);
-    _fadeCtrl.forward();
   }
 
   @override
   void dispose() {
     appState.removeListener(_u);
-    _fadeCtrl.dispose();
     _idCtrl.dispose();
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
@@ -705,14 +698,7 @@ class _AuthScreenState extends State<AuthScreen> with TickerProviderStateMixin {
   }
 
   void _u() => setState(() {});
-  void _go(String step) {
-    _fadeCtrl.reverse().then((_) {
-      if (mounted) {
-        setState(() => _step = step);
-        _fadeCtrl.forward();
-      }
-    });
-  }
+  void _go(String step) => setState(() => _step = step);
 
   Future<void> _doLogin(String credential) async {
     bool ok;
@@ -735,8 +721,7 @@ class _AuthScreenState extends State<AuthScreen> with TickerProviderStateMixin {
   }
 
   @override
-  Widget build(BuildContext context) =>
-      FadeTransition(opacity: _fade, child: _screen());
+  Widget build(BuildContext context) => _screen();
 
   Widget _screen() {
     switch (_step) {
@@ -1098,7 +1083,11 @@ class _PayFabState extends State<_PayFab> with SingleTickerProviderStateMixin {
         onTapDown: (_) => _c.forward(),
         onTapUp: (_) {
           _c.reverse();
-          Navigator.push(context, _slide(const TapPayPaymentScreen())).then((_) {
+          Navigator.push(
+              context,
+              _slide(TapPayPaymentScreen(
+                  onTransferTap: () => Navigator.push(
+                      context, _slide(const TransferScreen()))))).then((_) {
             appState.loadWallet();
             appState.loadTransactions();
           });
@@ -1346,33 +1335,51 @@ class _ConsumerDashboardState extends State<ConsumerDashboard> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               _ATile(
-                                  icon: Icons.send_rounded,
-                                  label: 'Send',
+                                  icon: Icons.contactless_rounded,
+                                  label: 'NFC Send',
+                                  color: const Color(0xFF0F172A),
+                                  ic: Colors.white,
+                                  onTap: () => Navigator.push(
+                                      context,
+                                      _slide(TapPayPaymentScreen(
+                                          onTransferTap: () => Navigator.push(
+                                              context,
+                                              _slide(const TransferScreen())))))),
+                              _ATile(
+                                  icon: Icons.contactless_outlined,
+                                  label: 'NFC Receive',
+                                  color: const Color(0xFFF0FDF4),
+                                  ic: const Color(0xFF16A34A),
+                                  onTap: () => Navigator.push(
+                                      context,
+                                      _slide(TapPayPaymentScreen(
+                                          initialMode: 'NFC_RECEIVE',
+                                          onTransferTap: () => Navigator.push(
+                                              context,
+                                              _slide(const TransferScreen())))))),
+                              _ATile(
+                                  icon: Icons.qr_code_rounded,
+                                  label: 'Show QR',
                                   color: const Color(0xFFEFF6FF),
                                   ic: const Color(0xFF3B82F6),
                                   onTap: () => Navigator.push(
-                                      context, _slide(const TransferScreen()))),
+                                      context,
+                                      _slide(TapPayPaymentScreen(
+                                          onTransferTap: () => Navigator.push(
+                                              context,
+                                              _slide(const TransferScreen())))))),
                               _ATile(
                                   icon: Icons.qr_code_scanner_rounded,
-                                  label: 'Scan',
-                                  color: const Color(0xFFF0FDF4),
-                                  ic: const Color(0xFF22C55E),
-                                  onTap: () => Navigator.push(context,
-                                      _slide(const TapPayPaymentScreen()))),
-                              _ATile(
-                                  icon: Icons.shield_rounded,
-                                  label: 'Verify',
+                                  label: 'Scan QR',
                                   color: const Color(0xFFFFFBEB),
                                   ic: const Color(0xFFF59E0B),
                                   onTap: () => Navigator.push(
-                                      context, _slide(const KycScreen()))),
-                              _ATile(
-                                  icon: Icons.account_balance_outlined,
-                                  label: 'Bank',
-                                  color: const Color(0xFFFDF4FF),
-                                  ic: const Color(0xFFA855F7),
-                                  onTap: () => Navigator.push(
-                                      context, _slide(const AddBankScreen()))),
+                                      context,
+                                      _slide(TapPayPaymentScreen(
+                                          initialMode: 'QR_SCAN',
+                                          onTransferTap: () => Navigator.push(
+                                              context,
+                                              _slide(const TransferScreen())))))),
                             ]),
                       ])),
               const SizedBox(height: 32),
@@ -1492,20 +1499,23 @@ class _ATile extends StatelessWidget {
       required this.ic,
       required this.onTap});
   @override
-  Widget build(BuildContext context) => GestureDetector(
-      onTap: onTap,
-      child: Column(children: [
-        Container(
-            width: 62,
-            height: 62,
-            decoration: BoxDecoration(
-                color: color, borderRadius: BorderRadius.circular(20)),
-            child: Icon(icon, color: ic, size: 26)),
-        const SizedBox(height: 8),
-        Text(label,
-            style: const TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w600, color: kDark)),
-      ]));
+  Widget build(BuildContext context) => Semantics(
+      label: label,
+      button: true,
+      child: GestureDetector(
+          onTap: onTap,
+          child: Column(children: [
+            Container(
+                width: 62,
+                height: 62,
+                decoration: BoxDecoration(
+                    color: color, borderRadius: BorderRadius.circular(20)),
+                child: Icon(icon, color: ic, size: 26)),
+            const SizedBox(height: 8),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, color: kDark)),
+          ])));
 }
 
 // ─── Transaction Tile ─────────────────────────────────────────────────────────
@@ -1882,7 +1892,11 @@ class MerchantDashboard extends StatelessWidget {
           const SizedBox(height: 20),
           GestureDetector(
             onTap: () =>
-                Navigator.push(context, _slide(const TapPayPaymentScreen())),
+                Navigator.push(
+                    context,
+                    _slide(TapPayPaymentScreen(
+                        onTransferTap: () => Navigator.push(
+                            context, _slide(const TransferScreen()))))),
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.all(36),
