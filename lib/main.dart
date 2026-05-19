@@ -4,6 +4,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'dart:math' as math;
 import 'services/api_service.dart';
 import 'services/payment_screen.dart';
+import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'services/local_auth_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -113,13 +116,57 @@ class AppState extends ChangeNotifier {
       String? password}) async {
     _load(true);
     clearError();
+    final localAuth = LocalAuthService();
     try {
+      final connectivity = await Connectivity().checkConnectivity();
+      final isOnline = connectivity != ConnectivityResult.none;
+
+      if (!isOnline) {
+        await localAuth.queueOfflineRegistration(
+          name: name, phone: phone, email: email, pin: pin,
+        );
+        userName = name;
+        userPhone = phone ?? '';
+        userEmail = email ?? '';
+        kycTier = 0;
+        kycStatus = 'UNVERIFIED';
+        balance = 0;
+        hasPassword = false;
+        isAuthenticated = true;
+        notifyListeners();
+        return true;
+      }
+
       final d = await AuthApi.register(
           name: name, email: email, phone: phone, pin: pin, password: password);
       _apply(d['user']);
+      await localAuth.cacheCredentials(
+        identifier: phone ?? email ?? '',
+        pin: pin,
+        user: d['user'],
+      );
       isAuthenticated = true;
       notifyListeners();
       return true;
+    } on SocketException {
+      try {
+        await localAuth.queueOfflineRegistration(
+          name: name, phone: phone, email: email, pin: pin,
+        );
+        userName = name;
+        userPhone = phone ?? '';
+        userEmail = email ?? '';
+        kycTier = 0;
+        kycStatus = 'UNVERIFIED';
+        balance = 0;
+        hasPassword = false;
+        isAuthenticated = true;
+        notifyListeners();
+        return true;
+      } catch (_) {
+        _setErr('No internet connection. Please try again when online.');
+        return false;
+      }
     } on ApiException catch (e) {
       _setErr(e.message);
       return false;
@@ -132,14 +179,49 @@ class AppState extends ChangeNotifier {
       {required String identifier, String? pin, String? password}) async {
     _load(true);
     clearError();
+    final localAuth = LocalAuthService();
     try {
+      final connectivity = await Connectivity().checkConnectivity();
+      final isOnline = connectivity != ConnectivityResult.none;
+
+      if (!isOnline && pin != null) {
+        final cached = await localAuth.verifyPinOffline(identifier: identifier, pin: pin);
+        if (cached != null) {
+          _apply(cached);
+          isAuthenticated = true;
+          notifyListeners();
+          return true;
+        }
+        _setErr('Incorrect PIN or no cached session. Connect to the internet for first-time login.');
+        return false;
+      }
+
       final d = await AuthApi.login(
           identifier: identifier, pin: pin, password: password);
       _apply(d['user']);
+      if (pin != null) {
+        await localAuth.cacheCredentials(
+          identifier: identifier,
+          pin: pin,
+          user: d['user'],
+        );
+      }
       isAuthenticated = true;
       notifyListeners();
       await loadWallet();
       return true;
+    } on SocketException {
+      if (pin != null) {
+        final cached = await localAuth.verifyPinOffline(identifier: identifier, pin: pin);
+        if (cached != null) {
+          _apply(cached);
+          isAuthenticated = true;
+          notifyListeners();
+          return true;
+        }
+      }
+      _setErr('No internet connection. Please check your connection and try again.');
+      return false;
     } on ApiException catch (e) {
       _setErr(e.message);
       return false;
@@ -150,8 +232,9 @@ class AppState extends ChangeNotifier {
 
   void logout() {
     AuthApi.logout();
+    LocalAuthService().clearSession();
     isAuthenticated = false;
-    userName = userPhone = '';
+    userName = userPhone = userEmail = '';
     balance = 0;
     kycTier = 0;
     transactions = [];
