@@ -119,47 +119,59 @@ class NfcService {
           final isoDep = IsoDep.from(tag);
           if (isoDep != null) {
             _log('IsoDep tag detected — sending SELECT AID');
-            _log('APDU → ${_selectAidApdu.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
+            _log(
+                'APDU → ${_selectAidApdu.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
 
             final response = await isoDep.transceive(data: _selectAidApdu);
-            _log('APDU ← ${response.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')} (${response.length} bytes)');
+            _log(
+                'APDU ← ${response.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')} (${response.length} bytes)');
 
             if (response.length < 3) {
-              _log('Response too short (${response.length} bytes) — sender not ready?');
-              onError('No response from sender. Make sure TapPay is open on their phone.');
-              await NfcManager.instance.stopSession(errorMessage: 'No response');
+              _log(
+                  'Response too short (${response.length} bytes) — sender not ready?');
+              onError(
+                  'No response from sender. Make sure TapPay is open on their phone.');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'No response');
               return;
             }
 
             final sw1 = response[response.length - 2];
             final sw2 = response[response.length - 1];
-            _log('Status word: ${sw1.toRadixString(16).padLeft(2,'0')} ${sw2.toRadixString(16).padLeft(2,'0')}');
+            _log(
+                'Status word: ${sw1.toRadixString(16).padLeft(2, '0')} ${sw2.toRadixString(16).padLeft(2, '0')}');
 
             if (sw1 == 0x6A && sw2 == 0x82) {
               _log('SW 6A82 — sender HCE has no token set');
               onError('Sender not ready. Ask them to start a payment first.');
-              await NfcManager.instance.stopSession(errorMessage: 'Sender not ready');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Sender not ready');
               return;
             }
 
             if (sw1 != 0x90 || sw2 != 0x00) {
               _log('Unexpected SW — not 9000');
               onError('Unexpected NFC response. Try again.');
-              await NfcManager.instance.stopSession(errorMessage: 'Bad response');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Bad response');
               return;
             }
 
-            final rawText = utf8.decode(response.sublist(0, response.length - 2));
+            final rawText =
+                utf8.decode(response.sublist(0, response.length - 2));
             _log('Token payload received (${rawText.length} chars): $rawText');
 
             final token = _parseToken(rawText, onError);
             if (token == null) {
-              await NfcManager.instance.stopSession(errorMessage: 'Invalid token');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Invalid token');
               return;
             }
 
-            _log('Token valid — id:${token.tokenId} sender:${token.senderId} amount:${token.amount}');
-            await NfcManager.instance.stopSession(alertMessage: 'Payment received! ✓');
+            _log(
+                'Token valid — id:${token.tokenId} sender:${token.senderId} amount:${token.amount}');
+            await NfcManager.instance
+                .stopSession(alertMessage: 'Payment received! ✓');
             onTokenReceived(token);
             return;
           }
@@ -183,17 +195,20 @@ class NfcService {
 
             final token = _parseToken(rawText, onError);
             if (token == null) {
-              await NfcManager.instance.stopSession(errorMessage: 'Invalid token');
+              await NfcManager.instance
+                  .stopSession(errorMessage: 'Invalid token');
               return;
             }
 
             _log('NDEF token valid — id:${token.tokenId}');
-            await NfcManager.instance.stopSession(alertMessage: 'Payment received! ✓');
+            await NfcManager.instance
+                .stopSession(alertMessage: 'Payment received! ✓');
             onTokenReceived(token);
             return;
           }
 
-          _log('Tag has neither IsoDep nor NDEF — unsupported: ${tag.data.keys}');
+          _log(
+              'Tag has neither IsoDep nor NDEF — unsupported: ${tag.data.keys}');
           onError('Could not read NFC device.');
           await NfcManager.instance.stopSession(errorMessage: 'Read failed');
         } catch (e) {
@@ -208,7 +223,8 @@ class NfcService {
     }
   }
 
-  static NfcPaymentToken? _parseToken(String raw, void Function(String) onError) {
+  static NfcPaymentToken? _parseToken(
+      String raw, void Function(String) onError) {
     try {
       final token = NfcPaymentToken.fromNfcPayload(raw);
       if (token.isExpired) {

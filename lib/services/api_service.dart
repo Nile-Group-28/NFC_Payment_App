@@ -223,13 +223,11 @@ class WalletApi {
   static Future<Map<String, dynamic>> linkBankAccount({
     required String bankName,
     required String accountNumber,
-    required String bankCode,
     String? accountName,
   }) =>
       _post('/wallet/bank-account', {
         'bankName': bankName,
         'accountNumber': accountNumber,
-        'bankCode': bankCode,
         if (accountName != null) 'accountName': accountName,
       });
 }
