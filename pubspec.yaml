@@ -1,7 +1,7 @@
 name: tappay
 description: TapPay — Contactless Digital Wallet with NFC Payments
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -17,6 +17,12 @@ dependencies:
   mobile_scanner: ^3.5.6
   webview_flutter: ^4.4.2
   url_launcher: ^6.2.2
+  flutter_secure_storage: ^9.0.0
+  sqflite: ^2.3.0
+  connectivity_plus: ^5.0.2
+  path: ^1.8.3
+  crypto: ^3.0.3
+  uuid: ^4.3.3
 
 dev_dependencies:
   flutter_test:
