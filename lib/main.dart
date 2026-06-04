@@ -45,7 +45,7 @@ class TappayApp extends StatelessWidget {
       );
 }
 
-// ─── Models ───────────────────────────────────────────────────────────────────
+// ─── Models ──────────────────────────────────────────────────────────
 enum UserRole { consumer, merchant }
 
 class Transaction {
